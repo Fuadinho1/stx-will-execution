@@ -131,3 +131,79 @@
 ;; Enhanced getters
 (define-read-only (get-beneficiary-info (beneficiary principal))
     (map-get? beneficiaries {beneficiary: beneficiary}))
+
+(define-read-only (get-contract-status)
+    {
+        active: (var-get is-active),
+        death-confirmed: (var-get death-confirmed),
+        confirmation-count: (var-get confirmation-count),
+        required-confirmations: (var-get required-confirmations),
+        last-will-hash: (var-get last-will-hash),
+        inheritance-tax: (var-get inheritance-tax)
+    })
+
+(define-read-only (get-nft-owner (token-id uint))
+    (map-get? nft-ownership token-id))
+
+;; Emergency functions
+(define-public (deactivate-contract)
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (var-set is-active false)
+        (ok true)))
+
+(define-public (update-required-confirmations (new-count uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (var-set required-confirmations new-count)
+        (ok true)))
+
+
+(define-map dispute-metadata
+    { disputer: principal }
+    {
+        resolution-votes: uint,
+        timestamp: uint
+    })
+
+(define-map resolution-votes 
+    { dispute-id: principal, voter: principal } 
+    bool)
+
+;; Voting threshold for dispute resolution
+(define-data-var resolution-threshold uint u3)
+
+
+;; Automatic dispute resolution
+(define-private (resolve-dispute (disputer principal))
+    (match (map-get? disputes {disputer: disputer})
+        dispute-data (begin
+            (map-set disputes 
+                {disputer: disputer}
+                (merge dispute-data {resolved: true}))
+            true)
+        false))
+
+;; Phased inheritance release
+(define-map inheritance-phases 
+    { beneficiary: principal } 
+    {
+        phase-1-claimed: bool,
+        phase-2-claimed: bool,
+        phase-1-amount: uint,
+        phase-2-amount: uint
+    })
+
+;; Claim phased inheritance
+(define-private (claim-phase-1 (phase-data {phase-1-claimed: bool, phase-2-claimed: bool, phase-1-amount: uint, phase-2-amount: uint}))
+    (begin
+        (asserts! (not (get phase-1-claimed phase-data)) ERR-ALREADY-CLAIMED)
+        (let ((amount (/ (* (stx-get-balance (as-contract tx-sender)) 
+                          (get phase-1-amount phase-data)) 
+                       u100)))
+            (begin
+                (map-set inheritance-phases 
+                    {beneficiary: tx-sender}
+                    (merge phase-data {phase-1-claimed: true}))
+                (as-contract
+                    (stx-transfer? amount contract-caller tx-sender))))))
