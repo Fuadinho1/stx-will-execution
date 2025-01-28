@@ -64,3 +64,70 @@
                 nft-tokens: nft-list
             })
         (ok true)))
+
+;; Oracle death confirmation with multi-sig requirement
+(define-public (confirm-death)
+    (begin
+        (asserts! (default-to false (map-get? oracles tx-sender)) ERR-NOT-AUTHORIZED)
+        (var-set confirmation-count (+ (var-get confirmation-count) u1))
+        (if (>= (var-get confirmation-count) (var-get required-confirmations))
+            (var-set death-confirmed true)
+            false)
+        (ok true)))
+
+;; Update last will document hash
+(define-public (update-will-hash (new-hash (buff 32)))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (var-set last-will-hash new-hash)
+        (ok true)))
+
+;; Claim inheritance with time-lock and NFT transfer
+(define-public (claim-inheritance)
+    (let ((beneficiary-data (unwrap! (map-get? beneficiaries {beneficiary: tx-sender}) 
+                                    ERR-NOT-AUTHORIZED)))
+        (begin
+            (asserts! (var-get death-confirmed) ERR-DEATH-NOT-CONFIRMED)
+            (asserts! (not (get claimed beneficiary-data)) ERR-ALREADY-CLAIMED)
+            (asserts! (>= stacks-block-height (get time-lock beneficiary-data)) ERR-TIME-LOCK)
+
+            ;; Calculate share amount with inheritance tax
+            (let ((share-amount (/ (* (stx-get-balance (as-contract tx-sender)) 
+                                    (get share beneficiary-data)) 
+                                 u100))
+                  (tax-amount (/ (* share-amount (var-get inheritance-tax)) u100)))
+
+                ;; Transfer NFTs
+                (map transfer-nft (get nft-tokens beneficiary-data))
+
+                ;; Update claimed status
+                (map-set beneficiaries 
+                    {beneficiary: tx-sender}
+                    (merge beneficiary-data {claimed: true}))
+
+                ;; Transfer share minus tax
+                (as-contract
+                    (stx-transfer? (- share-amount tax-amount) 
+                                 contract-caller 
+                                 tx-sender))))))
+
+;; Helper function for NFT transfer
+(define-private (transfer-nft (token-id uint))
+    (begin
+        (map-set nft-ownership token-id tx-sender)
+        true))
+
+;; Add dispute resolution mechanism
+(define-map disputes { disputer: principal } { evidence-hash: (buff 32), resolved: bool })
+
+(define-public (raise-dispute (evidence-hash (buff 32)))
+    (let ((beneficiary-data (unwrap! (map-get? beneficiaries {beneficiary: tx-sender}) ERR-NOT-AUTHORIZED)))
+        (begin
+            (map-set disputes 
+                {disputer: tx-sender}
+                {evidence-hash: evidence-hash, resolved: false})
+            (ok true))))
+
+;; Enhanced getters
+(define-read-only (get-beneficiary-info (beneficiary principal))
+    (map-get? beneficiaries {beneficiary: beneficiary}))
